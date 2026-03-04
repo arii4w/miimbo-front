@@ -36,7 +36,7 @@ function NPV(rate: number, cashflows: number[]): number {
 
 const valNum = (n: number | string | null | undefined): number => Number(n) || 0
 
-// Constante de Tipo de Cambio (para validaciones de Bonos cuando está en USD)
+// Tipo de Cambio Base para validación de Bonos
 const TIPO_CAMBIO = 3.80; 
 
 // ================= INTERFACES Y TIPOS =================
@@ -80,6 +80,7 @@ type ResumenData = {
   tir?: number;
   tcea?: number;
   van?: number;
+  bonoAplicado?: number;
 }
 
 // ================= COMPONENTE PRINCIPAL =================
@@ -95,7 +96,7 @@ export function Simulation() {
   const [tasaTipo, setTasaTipo] = useState<string>('Constante')
 
   // ================= ESTADOS Y VARIABLES FINANCIERAS =================
-  const [PV, setPV] = useState<number | ''>(250000) 
+  const [PV, setPV] = useState<number | ''>(70000) 
   const [pCI, setPCI] = useState<number | ''>(15)
   const [NA, setNA] = useState<number | ''>(10)
   const [frec, setFrec] = useState<number>(30)
@@ -103,7 +104,7 @@ export function Simulation() {
 
   // Ingresos del Cliente 
   const [ingresoMensual, setIngresoMensual] = useState<number | ''>(3000)
-  const [ingresoFamiliar, setIngresoFamiliar] = useState<number | ''>(5200)
+  const [ingresoFamiliar, setIngresoFamiliar] = useState<number | ''>(3200)
 
   const [costeNotarial, setCosteNotarial] = useState<number | ''>(150)
   const [costeRegistral, setCosteRegistral] = useState<number | ''>(200)
@@ -141,17 +142,46 @@ export function Simulation() {
   const [cronogramaData, setCronogramaData] = useState<SimulationRow[]>([])
   const [resumenData, setResumenData] = useState<ResumenData>({})
 
-  // ================= CÁLCULOS ESTÁTICOS BASE =================
-  const GastosIni = valNum(costeNotarial) + valNum(costeRegistral) + valNum(tasacion) + valNum(comEstudio) + valNum(comActivacion)
-  const numFrec = valNum(frec)
-  const numNA = valNum(NA)
+  // ================= EXTRACCIÓN SEGURA DE NÚMEROS =================
   const numPV = valNum(PV)
   const numPCI = valNum(pCI)
+  const numNA = valNum(NA)
+  const numFrec = valNum(frec)
+  const numIngresoMensual = valNum(ingresoMensual)
+  const numIngresoFamiliar = valNum(ingresoFamiliar)
+
+  // ================= CÁLCULOS LÓGICOS DE BONOS =================
+  const pvSoles = moneda === 'USD' ? numPV * TIPO_CAMBIO : numPV;
+  const imSoles = moneda === 'USD' ? numIngresoMensual * TIPO_CAMBIO : numIngresoMensual;
+  const ifSoles = moneda === 'USD' ? numIngresoFamiliar * TIPO_CAMBIO : numIngresoFamiliar;
+
+  const minPCI_BFH = pvSoles < 109000 ? 1 : 3;
+
+  const RequisitosBBP = numPCI >= 7.5 && numNA >= 5 && numNA <= 25 && pvSoles >= 68800 && pvSoles <= 362100 && imSoles >= 1000;
+  const RequisitosBFH = numPCI >= minPCI_BFH && numNA >= 5 && numNA <= 25 && pvSoles <= 136000 && ifSoles <= 3715 && imSoles >= 350;
+
+  const montoBonoBase = 7800;
   
+  // Variables derivadas para el renderizado
+  const BonoBBP = (bonoTipo === 'BuenPagador' && RequisitosBBP) ? (moneda === 'USD' ? montoBonoBase / TIPO_CAMBIO : montoBonoBase) : 0;
+  const BonoBFH = (bonoTipo === 'FamiliarHabitacional' && RequisitosBFH) ? (moneda === 'USD' ? montoBonoBase / TIPO_CAMBIO : montoBonoBase) : 0;
+  const bonoActivoValue = BonoBBP || BonoBFH;
+
+  const GastosIni = valNum(costeNotarial) + valNum(costeRegistral) + valNum(tasacion) + valNum(comEstudio) + valNum(comActivacion)
   const NCxA = numFrec > 0 ? Math.floor(NDxA / numFrec) : 0
   const N = NCxA * numNA
   
-  const Saldo = numPV - (numPV * (numPCI / 100))
+  // Saldo y Prestamo re-calculados dinámicamente
+  const Saldo = useMemo(() => {
+    let s = numPV - (numPV * (numPCI / 100));
+    if (bonoTipo === 'BuenPagador' && RequisitosBBP) {
+      s = s - BonoBBP;
+    } else if (bonoTipo === 'FamiliarHabitacional' && RequisitosBFH) {
+      s = Math.max(0, s - BonoBFH);
+    }
+    return s;
+  }, [numPV, numPCI, bonoTipo, RequisitosBBP, RequisitosBFH, BonoBBP, BonoBFH])
+
   const Prestamo = Saldo + GastosIni
   const pSegDesPer = (valNum(pSegDes) / 100) / 30 * numFrec
   const SegRiePer = ((valNum(pSegRie) / 100) * numPV) / (NCxA || 1) 
@@ -167,7 +197,7 @@ export function Simulation() {
     return Math.pow(1 + (tn / 100) / m, n) - 1;
   }, [plazoTN, valTN, capTN]);
 
-  // ================= NUEVA SIMULACIÓN (RESETEAR CAMPOS) =================
+  // ================= NUEVA SIMULACIÓN =================
   const handleNuevaSimulacion = () => {
     setMoneda('PEN')
     setPV('')
@@ -205,22 +235,18 @@ export function Simulation() {
     setActiveTab('datos')
   }
 
-  // ================= LÓGICA DE VALIDACIÓN DE BONOS =================
-  const checkBonoRequirements = (tipo: string): string => {
-    // Si es Dólares, convertimos a Soles para comparar con los límites legales peruanos
-    const pvSoles = moneda === 'USD' ? numPV * TIPO_CAMBIO : numPV;
-    const imSoles = moneda === 'USD' ? valNum(ingresoMensual) * TIPO_CAMBIO : valNum(ingresoMensual);
-    const ifSoles = moneda === 'USD' ? valNum(ingresoFamiliar) * TIPO_CAMBIO : valNum(ingresoFamiliar);
-
+  // ================= CONTROLADORES DE BONOS =================
+  const checkBonoRequirementsStr = (tipo: string): string => {
     if (tipo === 'BuenPagador') {
       if (pvSoles < 68800 || pvSoles > 362100) return `El valor del inmueble debe estar entre S/68,800 y S/362,100 (o eq. en USD).`
       if (imSoles < 1000) return `El ingreso mensual mínimo debe ser de S/1,000 (o eq. en USD).`
       if (numPCI < 7.5) return 'La cuota inicial debe ser de al menos 7.5%.'
-      if (numNA < 5) return 'No se puede pagar el crédito en menos de 5 años.'
+      if (numNA < 5 || numNA > 25) return 'No se puede pagar el crédito fuera del rango de 5 a 25 años.'
     } else if (tipo === 'FamiliarHabitacional') {
       if (pvSoles > 136000) return `El valor del inmueble no puede superar los S/136,000 (o eq. en USD).`
-      if (ifSoles > 3715) return `El ingreso familiar no puede superar los S/3,715 (o eq. en USD).`
+      if (ifSoles > 3715) return `El ingreso familiar máximo es S/3,715 (o eq. en USD).`
       if (imSoles < 350) return `El ingreso mensual mínimo debe ser de S/350 (o eq. en USD).`
+      if (numNA < 5 || numNA > 25) return 'No se puede pagar el crédito fuera del rango de 5 a 25 años.'
     }
     return ''
   }
@@ -231,19 +257,24 @@ export function Simulation() {
       setBonoError('')
       return
     }
-    const error = checkBonoRequirements(tipo)
+    
+    const error = checkBonoRequirementsStr(tipo)
     if (error) {
       setBonoTipo('')
       setBonoError(error)
     } else {
       setBonoTipo(tipo)
       setBonoError('')
+      // Setear cuota inicial automáticamente si es BFH
+      if (tipo === 'FamiliarHabitacional') {
+        setPCI(minPCI_BFH)
+      }
     }
   }
 
   useEffect(() => {
     if (bonoTipo) {
-      const error = checkBonoRequirements(bonoTipo)
+      const error = checkBonoRequirementsStr(bonoTipo)
       if (error) {
         setBonoTipo('')
         setBonoError(`Bono desactivado: ${error}`)
@@ -500,7 +531,8 @@ export function Simulation() {
     setResumenData({
       Saldo, Prestamo, NCxA, N, pSegDesPer, SegRiePer, COKi,
       tIntereses, tAmortizacion, tSegDesgravamen, tSegRiesgo,
-      tComisiones, tPortesGastosAdm, tir, tcea, van
+      tComisiones, tPortesGastosAdm, tir, tcea, van,
+      bonoAplicado: bonoActivoValue
     })
     
     setActiveTab('resultados')
@@ -523,10 +555,6 @@ export function Simulation() {
     { label: 'ct (90)', value: 90 }, { label: 'cc (120)', value: 120 },
     { label: 'cs (180)', value: 180 }, { label: 'ca (360)', value: 360 },
   ]
-
-  // Monto del bono convertido a la moneda actual para visualización
-  const montoBonoBase = 7800;
-  const montoBonoConvertido = moneda === 'USD' ? montoBonoBase / TIPO_CAMBIO : montoBonoBase;
 
   return (
     <div className="space-y-6 relative max-w-5xl mx-auto">
@@ -621,7 +649,7 @@ export function Simulation() {
                           <div key={idx} className="flex gap-2 items-start">
                             <div className="w-24"><Input label={idx === 0 ? "Rango" : ""} type="text" placeholder="Ej: 1-12" value={tv.rango} onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleUpdateTasaVariable(idx, 'rango', e.target.value)} /></div>
                             <div className="flex-1"><Input label={idx === 0 ? "TEA" : ""} type="number" value={tv.rate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleUpdateTasaVariable(idx, 'rate', e.target.value)} suffix="%" /></div>
-                            {idx > 0 && (<button type="button" onClick={() => handleRemoveTasaVariable(idx)} className="mt-2.5 text-red-400 font-black hover:text-red-600 px-1">✕</button>)}
+                            {idx > 0 && (<button type="button" onClick={() => handleRemoveTasaVariable(idx)} className="mt-5 text-red-400 font-black hover:text-red-600 px-1">✕</button>)}
                           </div>
                         ))}
                         <button type="button" onClick={handleAddTasaVariable} className="text-[10px] text-[#D98A36] font-bold">+ Agregar periodo</button>
@@ -662,7 +690,7 @@ export function Simulation() {
                                   <div className="text-[9px] text-[#D98A36] font-bold mt-1">TEA: {fmtPct(localTEA)}</div>
                                 )}
                               </div>
-                              {idx > 0 && (<button type="button" onClick={() => handleRemoveTasaVariable(idx)} className="mt-2.5 text-red-400 font-black hover:text-red-600 px-1">✕</button>)}
+                              {idx > 0 && (<button type="button" onClick={() => handleRemoveTasaVariable(idx)} className="mt-5 text-red-400 font-black hover:text-red-600 px-1">✕</button>)}
                             </div>
                           )
                         })}
@@ -686,14 +714,22 @@ export function Simulation() {
                   Bono Familiar Habitacional
                 </label>
                 
+                {/* Mensaje de Error de Bono */}
                 {bonoError && (
                   <p className="text-[10px] text-red-500 font-bold leading-tight pt-1">
                     {bonoError}
                   </p>
                 )}
                 
+                <div className="pt-2">
+                  <SummaryRow label="Monto del Bono:" value={bonoTipo ? `${sym} ${fmt(bonoActivoValue)}` : `${sym} 0.00`} />
+                </div>
+                
+                {/* Monto Final a Financiar */}
                 <div className="pt-1">
-                  <SummaryRow label="Monto del Bono:" value={bonoTipo ? `${sym} ${fmt(montoBonoConvertido)}` : `${sym} 0.00`} />
+                  <p className="text-[10px] font-bold text-center border border-[#D98A36]/30 bg-white/40 rounded-lg py-1.5 shadow-sm" style={{ color: '#D98A36' }}>
+                    El monto a financiar será de: {sym} {fmt(Prestamo)}
+                  </p>
                 </div>
               </div>
             </div>
@@ -788,6 +824,11 @@ export function Simulation() {
                 <SummaryItem label="Cliente" value="Juan Pérez" />
                 <SummaryItem label="Inmueble" value="Edificio ABC" />
                 <SummaryItem label="Bono aplicado" value={bonoTipo === 'BuenPagador' ? "Bono del Buen Pagador" : bonoTipo === 'FamiliarHabitacional' ? "Bono Familiar Habitacional" : "Ninguno"} />
+                {bonoTipo !== '' && (
+                   <div className="pt-1 border-t border-white/30 mt-1">
+                      <SummaryItem label="Valor del Bono" value={`${sym} ${fmt(resumenData.bonoAplicado)}`} />
+                   </div>
+                )}
               </SummarySection>
               <SummarySection title="Del Préstamo">
                 <SummaryItem label="Precio de Venta" value={fmtCurr(valNum(PV))} />
